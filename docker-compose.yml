@@ -1,0 +1,23 @@
+version: '3.8'
+services:
+  mongo:
+    image: mongo:latest
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    networks:
+      - quiz-network
+
+  quiz-go:
+    build: .
+    container_name: quiz-go
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo
+    networks:
+      - quiz-network
+
+networks:
+  quiz-network:
+    driver: bridge

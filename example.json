@@ -1,0 +1,27 @@
+{
+  "question": {
+    "description": "Qual é a capital da França?",
+    "explanation": "Paris é a capital da França desde o século X.",
+    "difficulty": "easy",
+    "categories": ["Geografia", "Europa"],
+    "allow_multiple": false,
+    "options": [
+      {
+        "option_text": "Paris",
+        "is_correct": true
+      },
+      {
+        "option_text": "Berlin",
+        "is_correct": false
+      },
+      {
+        "option_text": "Londres",
+        "is_correct": false
+      },
+      {
+        "option_text": "Madrid",
+        "is_correct": false
+      }
+    ]
+  }
+}
