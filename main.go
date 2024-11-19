@@ -35,6 +35,51 @@ type Option struct {
 var client *mongo.Client
 var questionCollection *mongo.Collection
 
+func deleteQuestion(w http.ResponseWriter, r *http.Request) {
+  log.Println("Rota DELETE chamada")
+  // Define path variable for question ID
+  vars := mux.Vars(r)
+  questionID, ok := vars["id"]
+  if !ok {
+      log.Println("Erro: ID da questão não fornecido")
+      http.Error(w, "É necessário fornecer o ID da questão para removê-la", http.StatusBadRequest)
+      return
+  }
+
+  log.Printf("Received DELETE request for question ID: %s", questionID)
+
+  // Converte o ID da string para ObjectID
+  objectID, err := primitive.ObjectIDFromHex(questionID)
+  if err != nil {
+      log.Printf("Erro ao converter ID da string para ObjectID: %v", err)
+      http.Error(w, "ID da questão inválido", http.StatusBadRequest)
+      return
+  }
+
+  // Define o filtro para a questão a ser removida
+  filter := bson.M{"_id": objectID}
+
+  // Realiza a remoção da questão
+  deleteResult, err := questionCollection.DeleteOne(context.TODO(), filter)
+  if err != nil {
+      log.Printf("Erro ao remover questão do MongoDB: %v", err)
+      http.Error(w, "Erro ao remover a questão", http.StatusInternalServerError)
+      return
+  }
+
+  // Verifica o número de documentos removidos
+  if deleteResult.DeletedCount == 0 {
+      log.Printf("Questão com ID %s não encontrada", questionID)
+      http.Error(w, "Questão não encontrada", http.StatusNotFound)
+      return
+  }
+
+  log.Printf("Questão com ID %s removida com sucesso", questionID)
+
+  // Define o status HTTP 204 No Content
+  w.WriteHeader(http.StatusNoContent)
+}
+
 func main() {
     // Configurações do logger
     log.SetFlags(log.LstdFlags | log.Lshortfile) // Adiciona timestamp e nome do arquivo
@@ -51,6 +96,8 @@ func main() {
     questionCollection = client.Database("quizdb").Collection("questions")
 
     r := mux.NewRouter()
+    log.Println("Configurando rotas")
+    r.HandleFunc("/questions/{id:[a-zA-Z0-9]+}", deleteQuestion).Methods("DELETE")
     r.HandleFunc("/questions", createQuestion).Methods("POST")
     r.HandleFunc("/questions", getQuestions).Methods("GET")
 
