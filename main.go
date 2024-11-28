@@ -101,6 +101,7 @@ func main() {
 	r.HandleFunc("/questions", createQuestion).Methods("POST")
 	r.HandleFunc("/questions", getQuestions).Methods("GET")
 	r.HandleFunc("/questions/{id}", updateQuestion).Methods("PUT")
+	r.HandleFunc("/questions/{id}", getQuestion).Methods("GET")
 
 	log.Println("Iniciando servidor na porta 8000")
 	http.Handle("/", r)
@@ -108,72 +109,107 @@ func main() {
 }
 
 func updateQuestion(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	params := mux.Vars(r) // Obtém os parâmetros da rota
-	id := params["id"]
+	questionID := mux.Vars(r)["id"]
 
-	objID, err := primitive.ObjectIDFromHex(id) // Converte o ID para ObjectID do MongoDB
+	// Converte o ID da string para ObjectID
+	objID, err := primitive.ObjectIDFromHex(questionID)
 	if err != nil {
 		log.Printf("ID inválido: %v", err)
 		http.Error(w, "ID inválido", http.StatusBadRequest)
 		return
 	}
 
-	var updatedData QuestionDetails
-	if err := json.NewDecoder(r.Body).Decode(&updatedData); err != nil {
-		log.Printf("Erro ao decodificar o corpo da requisição: %v", err)
-		http.Error(w, "Dados inválidos", http.StatusBadRequest)
+	var updatedDetails QuestionDetails
+
+	// Decodifica o corpo da solicitação para QuestionDetails
+	if err := json.NewDecoder(r.Body).Decode(&updatedDetails); err != nil {
+		log.Printf("Erro ao decodificar JSON: %v", err)
+		http.Error(w, "Erro no corpo da requisição", http.StatusBadRequest)
 		return
 	}
-
-	// Cria o documento de atualização
-	update := bson.M{"$set": bson.M{
-		"question.description":    updatedData.Description,
-		"question.explanation":    updatedData.Explanation,
-		"question.difficulty":     updatedData.Difficulty,
-		"question.categories":     updatedData.Categories,
-		"question.allow_multiple": updatedData.AllowMultiple,
-		"question.options":        updatedData.Options,
-	}}
 
 	// Atualiza o documento no MongoDB
-	result, err := questionCollection.UpdateOne(context.TODO(), bson.M{"_id": objID}, update)
-	if err != nil {
-		log.Printf("Erro ao atualizar a pergunta: %v", err)
-		http.Error(w, "Erro ao atualizar a pergunta", http.StatusInternalServerError)
+	filter := bson.M{"_id": objID}
+	update := bson.M{"$set": bson.M{"question": updatedDetails}}
+
+	result := questionCollection.FindOneAndUpdate(context.TODO(), filter, update, options.FindOneAndUpdate().SetReturnDocument(options.After))
+	if result.Err() != nil {
+		log.Printf("Erro ao atualizar questão: %v", result.Err())
+		http.Error(w, "Erro ao atualizar questão", http.StatusInternalServerError)
 		return
 	}
 
-	if result.MatchedCount == 0 {
-		log.Printf("Nenhuma pergunta encontrada com o ID: %s", id)
-		http.Error(w, "Nenhuma pergunta encontrada", http.StatusNotFound)
+	// Recupera os dados atualizados
+	var updatedQuestion Question
+	if err := result.Decode(&updatedQuestion); err != nil {
+		log.Printf("Erro ao decodificar resultado: %v", err)
+		http.Error(w, "Erro ao recuperar questão atualizada", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Pergunta atualizada com sucesso: %s", id)
+	// Define o cabeçalho Content-Type como application/json
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Pergunta atualizada com sucesso"})
+
+	// Retorna os dados completos da questão atualizada
+	if err := json.NewEncoder(w).Encode(updatedQuestion); err != nil {
+		log.Printf("Erro ao codificar resposta em JSON: %v", err)
+	}
+}
+
+func getQuestion(w http.ResponseWriter, r *http.Request) {
+	questionID := mux.Vars(r)["id"]
+
+	// Converte o ID da string para ObjectID
+	objID, err := primitive.ObjectIDFromHex(questionID)
+	if err != nil {
+		log.Printf("ID inválido: %v", err)
+		http.Error(w, "ID inválido", http.StatusBadRequest)
+		return
+	}
+
+	// Busca o registro no MongoDB
+	var question Question
+	filter := bson.M{"_id": objID}
+	err = questionCollection.FindOne(context.TODO(), filter).Decode(&question)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			log.Printf("Nenhum registro encontrado para o ID: %s", questionID)
+			http.Error(w, "Registro não encontrado", http.StatusNotFound)
+		} else {
+			log.Printf("Erro ao buscar registro: %v", err)
+			http.Error(w, "Erro interno do servidor", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Define o cabeçalho Content-Type como application/json
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	// Retorna o registro como JSON
+	if err := json.NewEncoder(w).Encode(question); err != nil {
+		log.Printf("Erro ao codificar resposta em JSON: %v", err)
+	}
 }
 
 func createQuestion(w http.ResponseWriter, r *http.Request) {
-	var requestBody struct {
-		Question QuestionDetails `json:"question"`
-	}
+	var questionDetails QuestionDetails
 
-	// Decodifica o corpo da solicitação
-	if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+	// Decodifica o corpo da solicitação diretamente para `QuestionDetails`
+	if err := json.NewDecoder(r.Body).Decode(&questionDetails); err != nil {
 		log.Printf("Erro ao decodificar JSON: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// Log dos dados recebidos
-	log.Printf("Recebido: %+v", requestBody)
+	log.Printf("Recebido: %+v", questionDetails)
 
 	// Gera um novo ObjectID para a questão
 	newQuestion := Question{
 		ID:       primitive.NewObjectID(),
-		Question: requestBody.Question, // Preenche os detalhes da questão
+		Question: questionDetails, // Preenche os detalhes da questão
 	}
 
 	// Inserir a questão no MongoDB
