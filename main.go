@@ -32,59 +32,263 @@ type Option struct {
 	IsCorrect  bool   `json:"is_correct"`
 }
 
+type Category struct {
+	ID   primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
+	Name string             `json:"name"`
+}
+
 var client *mongo.Client
 var questionCollection *mongo.Collection
+var categoryCollection *mongo.Collection
+
+func enableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func handleError(w http.ResponseWriter, err error, message string, statusCode int) {
+	log.Printf("%s: %v", message, err)
+	http.Error(w, message, statusCode)
+}
+
+func convertID(id string) (primitive.ObjectID, error) {
+	return primitive.ObjectIDFromHex(id)
+}
+
+func sendJSONResponse(w http.ResponseWriter, data interface{}, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("Erro ao codificar resposta em JSON: %v", err)
+		http.Error(w, "Erro ao retornar resposta", http.StatusInternalServerError)
+	}
+}
+
+func getQuestionByID(id string) (Question, error) {
+	var question Question
+	objectID, err := convertID(id)
+	if err != nil {
+		return question, err
+	}
+
+	filter := bson.M{"_id": objectID}
+	err = questionCollection.FindOne(context.TODO(), filter).Decode(&question)
+	return question, err
+}
+
+func getQuestion(w http.ResponseWriter, r *http.Request) {
+	questionID := mux.Vars(r)["id"]
+
+	question, err := getQuestionByID(questionID)
+	if err != nil {
+		handleError(w, err, "Erro ao buscar a questão", http.StatusNotFound)
+		return
+	}
+
+	log.Printf("Get Questão com ID %s", questionID)
+	sendJSONResponse(w, question, http.StatusOK)
+}
 
 func deleteQuestion(w http.ResponseWriter, r *http.Request) {
-	log.Println("Rota DELETE chamada")
-	// Define path variable for question ID
-	vars := mux.Vars(r)
-	questionID, ok := vars["id"]
-	if !ok {
-		log.Println("Erro: ID da questão não fornecido")
-		http.Error(w, "É necessário fornecer o ID da questão para removê-la", http.StatusBadRequest)
-		return
-	}
+	questionID := mux.Vars(r)["id"]
 
-	log.Printf("Received DELETE request for question ID: %s", questionID)
-
-	// Converte o ID da string para ObjectID
-	objectID, err := primitive.ObjectIDFromHex(questionID)
+	question, err := getQuestionByID(questionID)
 	if err != nil {
-		log.Printf("Erro ao converter ID da string para ObjectID: %v", err)
-		http.Error(w, "ID da questão inválido", http.StatusBadRequest)
+		handleError(w, err, "Erro ao buscar a questão", http.StatusNotFound)
 		return
 	}
 
-	// Define o filtro para a questão a ser removida
-	filter := bson.M{"_id": objectID}
-
-	// Realiza a remoção da questão
+	// Remove the question
+	filter := bson.M{"_id": question.ID}
 	deleteResult, err := questionCollection.DeleteOne(context.TODO(), filter)
+	if err != nil || deleteResult.DeletedCount == 0 {
+		handleError(w, err, "Erro ao remover a questão", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Get Questão com ID %s", questionID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func updateQuestion(w http.ResponseWriter, r *http.Request) {
+	questionID := mux.Vars(r)["id"]
+
+	var updatedDetails QuestionDetails
+	if err := json.NewDecoder(r.Body).Decode(&updatedDetails); err != nil {
+		handleError(w, err, "Erro no corpo da requisição", http.StatusBadRequest)
+		return
+	}
+
+	objectID, err := convertID(questionID)
 	if err != nil {
-		log.Printf("Erro ao remover questão do MongoDB: %v", err)
-		http.Error(w, "Erro ao remover a questão", http.StatusInternalServerError)
+		handleError(w, err, "ID inválido", http.StatusBadRequest)
 		return
 	}
 
-	// Verifica o número de documentos removidos
-	if deleteResult.DeletedCount == 0 {
-		log.Printf("Questão com ID %s não encontrada", questionID)
-		http.Error(w, "Questão não encontrada", http.StatusNotFound)
+	filter := bson.M{"_id": objectID}
+	update := bson.M{"$set": bson.M{"question": updatedDetails}}
+
+	result := questionCollection.FindOneAndUpdate(context.TODO(), filter, update, options.FindOneAndUpdate().SetReturnDocument(options.After))
+	if result.Err() != nil {
+		handleError(w, result.Err(), "Erro ao atualizar questão", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Questão com ID %s removida com sucesso", questionID)
+	var updatedQuestion Question
+	if err := result.Decode(&updatedQuestion); err != nil {
+		handleError(w, err, "Erro ao recuperar questão atualizada", http.StatusInternalServerError)
+		return
+	}
 
-	// Define o status HTTP 204 No Content
+	sendJSONResponse(w, updatedQuestion, http.StatusOK)
+}
+
+func createQuestion(w http.ResponseWriter, r *http.Request) {
+	var questionDetails QuestionDetails
+	if err := json.NewDecoder(r.Body).Decode(&questionDetails); err != nil {
+		handleError(w, err, "Erro ao decodificar JSON", http.StatusBadRequest)
+		return
+	}
+
+	newQuestion := Question{
+		ID:       primitive.NewObjectID(),
+		Question: questionDetails,
+	}
+
+	_, err := questionCollection.InsertOne(context.TODO(), newQuestion)
+	if err != nil {
+		handleError(w, err, "Erro ao inserir questão no MongoDB", http.StatusInternalServerError)
+		return
+	}
+
+	sendJSONResponse(w, newQuestion, http.StatusCreated)
+}
+
+func getQuestions(w http.ResponseWriter, r *http.Request) {
+	var questions []Question
+	cursor, err := questionCollection.Find(context.TODO(), bson.M{})
+	if err != nil {
+		handleError(w, err, "Erro ao buscar perguntas", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.TODO())
+
+	for cursor.Next(context.TODO()) {
+		var question Question
+		if err := cursor.Decode(&question); err != nil {
+			handleError(w, err, "Erro ao decodificar pergunta", http.StatusInternalServerError)
+			return
+		}
+		questions = append(questions, question)
+	}
+
+	sendJSONResponse(w, questions, http.StatusOK)
+}
+
+// CRUD Operations for Categories
+func createCategory(w http.ResponseWriter, r *http.Request) {
+	var category Category
+	if err := json.NewDecoder(r.Body).Decode(&category); err != nil {
+		handleError(w, err, "Erro ao decodificar JSON", http.StatusBadRequest)
+		return
+	}
+
+	category.ID = primitive.NewObjectID()
+	_, err := categoryCollection.InsertOne(context.TODO(), category)
+	if err != nil {
+		handleError(w, err, "Erro ao inserir categoria", http.StatusInternalServerError)
+		return
+	}
+
+	sendJSONResponse(w, category, http.StatusCreated)
+}
+
+func getCategories(w http.ResponseWriter, r *http.Request) {
+	var categories []Category
+	cursor, err := categoryCollection.Find(context.TODO(), bson.M{})
+	if err != nil {
+		handleError(w, err, "Erro ao buscar categorias", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.TODO())
+
+	for cursor.Next(context.TODO()) {
+		var category Category
+		if err := cursor.Decode(&category); err != nil {
+			handleError(w, err, "Erro ao decodificar categoria", http.StatusInternalServerError)
+			return
+		}
+		categories = append(categories, category)
+	}
+
+	sendJSONResponse(w, categories, http.StatusOK)
+}
+
+func updateCategory(w http.ResponseWriter, r *http.Request) {
+	categoryID := mux.Vars(r)["id"]
+
+	var updatedCategory Category
+	if err := json.NewDecoder(r.Body).Decode(&updatedCategory); err != nil {
+		handleError(w, err, "Erro ao decodificar JSON", http.StatusBadRequest)
+		return
+	}
+
+	objectID, err := convertID(categoryID)
+	if err != nil {
+		handleError(w, err, "ID inválido", http.StatusBadRequest)
+		return
+	}
+
+	filter := bson.M{"_id": objectID}
+	update := bson.M{"$set": bson.M{"name": updatedCategory.Name}}
+
+	result := categoryCollection.FindOneAndUpdate(context.TODO(), filter, update, options.FindOneAndUpdate().SetReturnDocument(options.After))
+	if result.Err() != nil {
+		handleError(w, result.Err(), "Erro ao atualizar categoria", http.StatusInternalServerError)
+		return
+	}
+
+	var updatedCategoryResponse Category
+	if err := result.Decode(&updatedCategoryResponse); err != nil {
+		handleError(w, err, "Erro ao recuperar categoria atualizada", http.StatusInternalServerError)
+		return
+	}
+
+	sendJSONResponse(w, updatedCategoryResponse, http.StatusOK)
+}
+
+func deleteCategory(w http.ResponseWriter, r *http.Request) {
+	categoryID := mux.Vars(r)["id"]
+
+	objectID, err := convertID(categoryID)
+	if err != nil {
+		handleError(w, err, "ID inválido", http.StatusBadRequest)
+		return
+	}
+
+	filter := bson.M{"_id": objectID}
+	deleteResult, err := categoryCollection.DeleteOne(context.TODO(), filter)
+	if err != nil || deleteResult.DeletedCount == 0 {
+		handleError(w, err, "Erro ao remover categoria", http.StatusInternalServerError)
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func main() {
-	// Configurações do logger
-	log.SetFlags(log.LstdFlags | log.Lshortfile) // Adiciona timestamp e nome do arquivo
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	// Conexão com o MongoDB
 	clientOptions := options.Client().ApplyURI("mongodb://mongo:27017")
 	var err error
 	client, err = mongo.Connect(context.TODO(), clientOptions)
@@ -94,6 +298,7 @@ func main() {
 	log.Println("Conectado ao MongoDB com sucesso")
 
 	questionCollection = client.Database("quizdb").Collection("questions")
+	categoryCollection = client.Database("quizdb").Collection("categories")
 
 	r := mux.NewRouter()
 	log.Println("Configurando rotas")
@@ -103,166 +308,13 @@ func main() {
 	r.HandleFunc("/questions/{id}", updateQuestion).Methods("PUT")
 	r.HandleFunc("/questions/{id}", getQuestion).Methods("GET")
 
+	// Category routes
+	r.HandleFunc("/categories", createCategory).Methods("POST")
+	r.HandleFunc("/categories", getCategories).Methods("GET")
+	r.HandleFunc("/categories/{id}", updateCategory).Methods("PUT")
+	r.HandleFunc("/categories/{id}", deleteCategory).Methods("DELETE")
+
 	log.Println("Iniciando servidor na porta 8000")
-	http.Handle("/", r)
+	http.Handle("/", enableCORS(r))
 	log.Fatal(http.ListenAndServe(":8000", nil))
-}
-
-func updateQuestion(w http.ResponseWriter, r *http.Request) {
-	questionID := mux.Vars(r)["id"]
-
-	// Converte o ID da string para ObjectID
-	objID, err := primitive.ObjectIDFromHex(questionID)
-	if err != nil {
-		log.Printf("ID inválido: %v", err)
-		http.Error(w, "ID inválido", http.StatusBadRequest)
-		return
-	}
-
-	var updatedDetails QuestionDetails
-
-	// Decodifica o corpo da solicitação para QuestionDetails
-	if err := json.NewDecoder(r.Body).Decode(&updatedDetails); err != nil {
-		log.Printf("Erro ao decodificar JSON: %v", err)
-		http.Error(w, "Erro no corpo da requisição", http.StatusBadRequest)
-		return
-	}
-
-	// Atualiza o documento no MongoDB
-	filter := bson.M{"_id": objID}
-	update := bson.M{"$set": bson.M{"question": updatedDetails}}
-
-	result := questionCollection.FindOneAndUpdate(context.TODO(), filter, update, options.FindOneAndUpdate().SetReturnDocument(options.After))
-	if result.Err() != nil {
-		log.Printf("Erro ao atualizar questão: %v", result.Err())
-		http.Error(w, "Erro ao atualizar questão", http.StatusInternalServerError)
-		return
-	}
-
-	// Recupera os dados atualizados
-	var updatedQuestion Question
-	if err := result.Decode(&updatedQuestion); err != nil {
-		log.Printf("Erro ao decodificar resultado: %v", err)
-		http.Error(w, "Erro ao recuperar questão atualizada", http.StatusInternalServerError)
-		return
-	}
-
-	// Define o cabeçalho Content-Type como application/json
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	// Retorna os dados completos da questão atualizada
-	if err := json.NewEncoder(w).Encode(updatedQuestion); err != nil {
-		log.Printf("Erro ao codificar resposta em JSON: %v", err)
-	}
-}
-
-func getQuestion(w http.ResponseWriter, r *http.Request) {
-	questionID := mux.Vars(r)["id"]
-
-	// Converte o ID da string para ObjectID
-	objID, err := primitive.ObjectIDFromHex(questionID)
-	if err != nil {
-		log.Printf("ID inválido: %v", err)
-		http.Error(w, "ID inválido", http.StatusBadRequest)
-		return
-	}
-
-	// Busca o registro no MongoDB
-	var question Question
-	filter := bson.M{"_id": objID}
-	err = questionCollection.FindOne(context.TODO(), filter).Decode(&question)
-	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			log.Printf("Nenhum registro encontrado para o ID: %s", questionID)
-			http.Error(w, "Registro não encontrado", http.StatusNotFound)
-		} else {
-			log.Printf("Erro ao buscar registro: %v", err)
-			http.Error(w, "Erro interno do servidor", http.StatusInternalServerError)
-		}
-		return
-	}
-
-	// Define o cabeçalho Content-Type como application/json
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	// Retorna o registro como JSON
-	if err := json.NewEncoder(w).Encode(question); err != nil {
-		log.Printf("Erro ao codificar resposta em JSON: %v", err)
-	}
-}
-
-func createQuestion(w http.ResponseWriter, r *http.Request) {
-	var questionDetails QuestionDetails
-
-	// Decodifica o corpo da solicitação diretamente para `QuestionDetails`
-	if err := json.NewDecoder(r.Body).Decode(&questionDetails); err != nil {
-		log.Printf("Erro ao decodificar JSON: %v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Log dos dados recebidos
-	log.Printf("Recebido: %+v", questionDetails)
-
-	// Gera um novo ObjectID para a questão
-	newQuestion := Question{
-		ID:       primitive.NewObjectID(),
-		Question: questionDetails, // Preenche os detalhes da questão
-	}
-
-	// Inserir a questão no MongoDB
-	_, err := questionCollection.InsertOne(context.TODO(), newQuestion)
-	if err != nil {
-		log.Printf("Erro ao inserir questão no MongoDB: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	log.Println("Questão inserida com sucesso")
-
-	// Define o cabeçalho Content-Type como application/json
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	// Retorna a questão criada como resposta em formato JSON
-	if err := json.NewEncoder(w).Encode(newQuestion); err != nil {
-		log.Printf("Erro ao codificar resposta em JSON: %v", err)
-	}
-}
-
-func getQuestions(w http.ResponseWriter, r *http.Request) {
-	var questions []Question
-
-	// Define o cabeçalho Content-Type como application/json
-	w.Header().Set("Content-Type", "application/json")
-
-	cursor, err := questionCollection.Find(context.TODO(), bson.M{})
-	if err != nil {
-		log.Printf("Erro ao buscar perguntas: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer cursor.Close(context.TODO())
-
-	for cursor.Next(context.TODO()) {
-		var question Question
-		if err := cursor.Decode(&question); err != nil {
-			log.Printf("Erro ao decodificar pergunta: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		questions = append(questions, question)
-	}
-
-	log.Printf("Total de perguntas recuperadas: %d", len(questions))
-
-	// Define o status HTTP 200 OK
-	w.WriteHeader(http.StatusOK)
-
-	// Retorna a lista de perguntas como resposta em formato JSON
-	if err := json.NewEncoder(w).Encode(questions); err != nil {
-		log.Printf("Erro ao codificar resposta em JSON: %v", err)
-	}
 }
