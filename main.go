@@ -9,8 +9,9 @@ import (
 	"github.com/gorilla/mux"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+
+	"quiz-go/src/infrastructure/database/mongodb"
 )
 
 type Question struct {
@@ -36,10 +37,6 @@ type Category struct {
 	ID   primitive.ObjectID `bson:"_id,omitempty" json:"_id"`
 	Name string             `json:"name"`
 }
-
-var client *mongo.Client
-var questionCollection *mongo.Collection
-var categoryCollection *mongo.Collection
 
 func enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +79,7 @@ func getQuestionByID(id string) (Question, error) {
 	}
 
 	filter := bson.M{"_id": objectID}
-	err = questionCollection.FindOne(context.TODO(), filter).Decode(&question)
+	err = mongodb.QuestionCollection.FindOne(context.TODO(), filter).Decode(&question)
 	return question, err
 }
 
@@ -110,7 +107,7 @@ func deleteQuestion(w http.ResponseWriter, r *http.Request) {
 
 	// Remove the question
 	filter := bson.M{"_id": question.ID}
-	deleteResult, err := questionCollection.DeleteOne(context.TODO(), filter)
+	deleteResult, err := mongodb.QuestionCollection.DeleteOne(context.TODO(), filter)
 	if err != nil || deleteResult.DeletedCount == 0 {
 		handleError(w, err, "Erro ao remover a questão", http.StatusInternalServerError)
 		return
@@ -138,7 +135,7 @@ func updateQuestion(w http.ResponseWriter, r *http.Request) {
 	filter := bson.M{"_id": objectID}
 	update := bson.M{"$set": bson.M{"question": updatedDetails}}
 
-	result := questionCollection.FindOneAndUpdate(context.TODO(), filter, update, options.FindOneAndUpdate().SetReturnDocument(options.After))
+	result := mongodb.QuestionCollection.FindOneAndUpdate(context.TODO(), filter, update, options.FindOneAndUpdate().SetReturnDocument(options.After))
 	if result.Err() != nil {
 		handleError(w, result.Err(), "Erro ao atualizar questão", http.StatusInternalServerError)
 		return
@@ -165,7 +162,7 @@ func createQuestion(w http.ResponseWriter, r *http.Request) {
 		Question: questionDetails,
 	}
 
-	_, err := questionCollection.InsertOne(context.TODO(), newQuestion)
+	_, err := mongodb.QuestionCollection.InsertOne(context.TODO(), newQuestion)
 	if err != nil {
 		handleError(w, err, "Erro ao inserir questão no MongoDB", http.StatusInternalServerError)
 		return
@@ -176,7 +173,7 @@ func createQuestion(w http.ResponseWriter, r *http.Request) {
 
 func getQuestions(w http.ResponseWriter, r *http.Request) {
 	var questions []Question
-	cursor, err := questionCollection.Find(context.TODO(), bson.M{})
+	cursor, err := mongodb.QuestionCollection.Find(context.TODO(), bson.M{})
 	if err != nil {
 		handleError(w, err, "Erro ao buscar perguntas", http.StatusInternalServerError)
 		return
@@ -204,7 +201,7 @@ func createCategory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	category.ID = primitive.NewObjectID()
-	_, err := categoryCollection.InsertOne(context.TODO(), category)
+	_, err := mongodb.CategoryCollection.InsertOne(context.TODO(), category)
 	if err != nil {
 		handleError(w, err, "Erro ao inserir categoria", http.StatusInternalServerError)
 		return
@@ -215,7 +212,7 @@ func createCategory(w http.ResponseWriter, r *http.Request) {
 
 func getCategories(w http.ResponseWriter, r *http.Request) {
 	var categories []Category
-	cursor, err := categoryCollection.Find(context.TODO(), bson.M{})
+	cursor, err := mongodb.CategoryCollection.Find(context.TODO(), bson.M{})
 	if err != nil {
 		handleError(w, err, "Erro ao buscar categorias", http.StatusInternalServerError)
 		return
@@ -252,7 +249,7 @@ func updateCategory(w http.ResponseWriter, r *http.Request) {
 	filter := bson.M{"_id": objectID}
 	update := bson.M{"$set": bson.M{"name": updatedCategory.Name}}
 
-	result := categoryCollection.FindOneAndUpdate(context.TODO(), filter, update, options.FindOneAndUpdate().SetReturnDocument(options.After))
+	result := mongodb.CategoryCollection.FindOneAndUpdate(context.TODO(), filter, update, options.FindOneAndUpdate().SetReturnDocument(options.After))
 	if result.Err() != nil {
 		handleError(w, result.Err(), "Erro ao atualizar categoria", http.StatusInternalServerError)
 		return
@@ -277,7 +274,7 @@ func deleteCategory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filter := bson.M{"_id": objectID}
-	deleteResult, err := categoryCollection.DeleteOne(context.TODO(), filter)
+	deleteResult, err := mongodb.CategoryCollection.DeleteOne(context.TODO(), filter)
 	if err != nil || deleteResult.DeletedCount == 0 {
 		handleError(w, err, "Erro ao remover categoria", http.StatusInternalServerError)
 		return
@@ -289,16 +286,7 @@ func deleteCategory(w http.ResponseWriter, r *http.Request) {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	clientOptions := options.Client().ApplyURI("mongodb://mongo:27017")
-	var err error
-	client, err = mongo.Connect(context.TODO(), clientOptions)
-	if err != nil {
-		log.Fatalf("Erro ao conectar ao MongoDB: %v", err)
-	}
-	log.Println("Conectado ao MongoDB com sucesso")
-
-	questionCollection = client.Database("quizdb").Collection("questions")
-	categoryCollection = client.Database("quizdb").Collection("categories")
+	mongodb.Connect()
 
 	r := mux.NewRouter()
 	log.Println("Configurando rotas")

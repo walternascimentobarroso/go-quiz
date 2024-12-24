@@ -11,7 +11,7 @@ COPY go.mod ./
 RUN go mod tidy
 
 # Copia o código-fonte
-COPY *.go ./
+COPY . .
 
 # Baixa as dependências necessárias
 RUN go get -d ./...
