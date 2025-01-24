@@ -17,6 +17,7 @@ type QuestionDetails struct {
 }
 
 type Option struct {
-	OptionText string `json:"option_text"`
-	IsCorrect  bool   `json:"is_correct"`
+	OptionText  string `json:"option_text"`
+	IsCorrect   bool   `json:"is_correct"`
+	Explanation string `json:"explanation"`
 }

@@ -117,23 +117,22 @@ func CreateQuestion(w http.ResponseWriter, r *http.Request) {
 	utils.SendJSONResponse(w, newQuestion, http.StatusCreated)
 }
 
+func getIntOrDefault(value string, defaultValue int) int {
+	if value == "" {
+		return defaultValue
+	}
+	parsedValue, err := strconv.Atoi(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsedValue
+}
+
 func GetQuestions(w http.ResponseWriter, r *http.Request) {
 	// Obter parâmetros de query
 	categoryFilter := r.URL.Query().Get("category")
 	randomize := r.URL.Query().Get("random") == "true"
-	limitParam := r.URL.Query().Get("limit")
-
-	// Converter limit para um número, se possível
-	var limit int64 = 0 // Se limit for 0, significa sem limite (todos os itens)
-	if limitParam != "" {
-		var err error
-		limit, err = strconv.ParseInt(limitParam, 10, 64)
-		if err != nil || limit <= 0 {
-			// Se o parâmetro limit não for válido, podemos retornar erro ou usar o padrão
-			utils.HandleError(w, err, "Valor inválido para 'limit'", http.StatusBadRequest)
-			return
-		}
-	}
+	limit := getIntOrDefault(r.URL.Query().Get("limit"), 0)
 
 	// Construir filtro para consulta
 	filter := bson.M{}
@@ -143,10 +142,23 @@ func GetQuestions(w http.ResponseWriter, r *http.Request) {
 
 	var pipeline []bson.M
 	pipeline = append(pipeline, bson.M{"$match": filter})
+
+	// Adicionar $sample para randomize=true
 	if randomize {
-		pipeline = append(pipeline, bson.M{"$sample": bson.M{"size": limit}})
+		if limit > 0 {
+			pipeline = append(pipeline, bson.M{"$sample": bson.M{"size": limit}})
+		} else {
+			// Contar o total de documentos no banco para aplicar $sample
+			totalCount, err := mongodb.QuestionCollection.CountDocuments(context.TODO(), filter)
+			if err != nil {
+				utils.HandleError(w, err, "Erro ao contar documentos", http.StatusInternalServerError)
+				return
+			}
+			pipeline = append(pipeline, bson.M{"$sample": bson.M{"size": totalCount}})
+		}
 	}
 
+	// Adicionar $limit apenas se randomize for false e limit > 0
 	if !randomize && limit > 0 {
 		pipeline = append(pipeline, bson.M{"$limit": limit})
 	}
